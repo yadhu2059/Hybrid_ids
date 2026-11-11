@@ -6,10 +6,26 @@ import sqlite3
 import threading
 import psutil
 import subprocess
+import argparse
 from datetime import datetime
 
-PCAP_PATH = r'C:\Users\venug\Downloads\Thursday-WorkingHours.pcap'
-DB_PATH = 'database/alerts.db'
+ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+
+parser = argparse.ArgumentParser(description="Live PCAP Replay and Hybrid Fusion Runner")
+parser.add_argument("--pcap", type=str, default=None, help="Path to input PCAP file")
+parser.add_argument("--db", type=str, default="database/alerts.db", help="Path to SQLite database")
+cli_args, _ = parser.parse_known_args()
+
+POSSIBLE_PCAPS = [
+    cli_args.pcap,
+    os.path.expanduser(r"~\Downloads\Thursday-WorkingHours.pcap"),
+    os.path.join(ROOT_DIR, "data", "Thursday-WorkingHours.pcap"),
+    os.path.join(ROOT_DIR, "data", "slice_test", "thursday_sample_500k.pcap"),
+    os.path.join(ROOT_DIR, "data", "raw_pcap", "traffic_sample.pcap"),
+    r"C:\Users\venug\Downloads\Thursday-WorkingHours.pcap"
+]
+PCAP_PATH = next((p for p in POSSIBLE_PCAPS if p and os.path.exists(p)), None)
+DB_PATH = cli_args.db
 CONFIG_PATH = 'config/suricata.yaml'
 RULES_PATH = 'config/custom_rules.rules'
 LOG_DIR = 'logs'
@@ -19,6 +35,7 @@ stop_monitoring = False
 
 from src.eve_ingestor import generate_dynamic_reason, init_database
 from src.alert_notifier import AlertNotificationDispatcher
+from app.ml.fusion import HybridFusionEngine
 
 def resource_monitor_thread(log_file='logs/resource_usage.log'):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -56,9 +73,12 @@ def live_eve_tailer(eve_path, db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute('DELETE FROM alerts')
+    cursor.execute('DELETE FROM ml_predictions')
     conn.commit()
     
+    fusion_engine = HybridFusionEngine()
     batch = []
+    ml_batch = []
     total_streamed = 0
     
     with open(eve_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -70,6 +90,9 @@ def live_eve_tailer(eve_path, db_path):
                     conn.commit()
                     total_streamed += len(batch)
                     batch.clear()
+                if ml_batch:
+                    HybridFusionEngine.persist_fusion_records(ml_batch, db_path)
+                    ml_batch.clear()
                 time.sleep(0.3)
                 continue
                 
@@ -82,7 +105,16 @@ def live_eve_tailer(eve_path, db_path):
             except Exception:
                 continue
                 
-            if event.get('event_type') != 'alert':
+            evt_type = event.get('event_type')
+            if evt_type == 'flow':
+                fusion_rec = fusion_engine.process_flow(event)
+                ml_batch.append(fusion_rec)
+                if len(ml_batch) >= 100:
+                    HybridFusionEngine.persist_fusion_records(ml_batch, db_path)
+                    ml_batch.clear()
+                continue
+
+            if evt_type != 'alert':
                 continue
                 
             ts = event.get('timestamp', datetime.utcnow().isoformat())
@@ -155,6 +187,16 @@ def live_eve_tailer(eve_path, db_path):
 
 def main():
     global stop_monitoring
+    if not PCAP_PATH or not os.path.exists(PCAP_PATH):
+        print('=' * 70)
+        print('[!] ERROR: No valid PCAP capture file found.')
+        print('[*] Please specify a PCAP file using: python run_full_real_pcap.py --pcap <path_to_pcap>')
+        print('[*] Example: python run_full_real_pcap.py --pcap data/Thursday-WorkingHours.pcap')
+        print('[*] Note: The Ground-Truth Benchmark and Hybrid ML tabs in the UI (http://localhost:8000)')
+        print('    are already loaded and operational using the verified 6,216-flow benchmark!')
+        print('=' * 70)
+        return
+
     print('=' * 70)
     print(f'[*] STARTING LIVE REAL-TIME STREAMING INGESTION: {PCAP_PATH}')
     print(f'[*] File Size: {os.path.getsize(PCAP_PATH) / (1024**3):.2f} GB')

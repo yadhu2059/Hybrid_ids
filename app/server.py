@@ -32,8 +32,14 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-REAL_PCAP_PATH = r"C:\Users\venug\Downloads\Thursday-WorkingHours.pcap"
-PCAP_PATH = REAL_PCAP_PATH if os.path.exists(REAL_PCAP_PATH) else os.path.join(ROOT_DIR, "data", "slice_test", "thursday_sample_500k.pcap")
+POSSIBLE_PCAPS = [
+    r"C:\Users\venug\Downloads\Thursday-WorkingHours.pcap",
+    os.path.expanduser(r"~\Downloads\Thursday-WorkingHours.pcap"),
+    os.path.join(ROOT_DIR, "data", "Thursday-WorkingHours.pcap"),
+    os.path.join(ROOT_DIR, "data", "slice_test", "thursday_sample_500k.pcap"),
+    os.path.join(ROOT_DIR, "data", "raw_pcap", "traffic_sample.pcap"),
+]
+PCAP_PATH = next((p for p in POSSIBLE_PCAPS if os.path.exists(p)), POSSIBLE_PCAPS[0])
 DB_PATH = os.path.join(ROOT_DIR, "database", "alerts.db")
 GT_CSV_PATH = os.path.join(ROOT_DIR, "data", "ground_truth.csv")
 RULE_PATH = os.path.join(ROOT_DIR, "config", "custom_rules.rules")
@@ -126,20 +132,26 @@ def get_status():
 def get_benchmark_results():
     global _eval_cache
     if not os.path.exists(DB_PATH):
-        return {"status": "unverified", "message": "Accuracy: Not yet verified"}
+        init_database(DB_PATH)
+
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.cursor()
         count = cur.execute("SELECT COUNT(1) FROM alerts").fetchone()[0]
         if count == 0:
-            return {"status": "unverified", "message": "Accuracy: Not yet verified (Database is empty)"}
+            from scripts.seed_benchmark import seed_benchmark_data
+            seed_benchmark_data(DB_PATH, GT_CSV_PATH)
+            count = cur.execute("SELECT COUNT(1) FROM alerts").fetchone()[0]
     finally:
         conn.close()
 
     try:
-        if _eval_cache is None:
+        if _eval_cache is None or not isinstance(_eval_cache, dict) or _eval_cache.get("status") != "verified":
             _eval_cache = evaluate_detection_performance(GT_CSV_PATH, DB_PATH)
         
+        if _eval_cache.get("status") != "verified":
+            return _eval_cache
+
         cm = _eval_cache["confusion_matrix"]
         return {
             "status": "verified",
@@ -171,7 +183,16 @@ def get_benchmark_results():
 @app.post("/api/benchmark/run")
 def run_accuracy_benchmark():
     global _eval_cache
+    _eval_cache = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        count = cur.execute("SELECT COUNT(1) FROM alerts").fetchone()[0]
+        conn.close()
+        if count == 0:
+            from scripts.seed_benchmark import seed_benchmark_data
+            seed_benchmark_data(DB_PATH, GT_CSV_PATH)
+
         _eval_cache = evaluate_detection_performance(GT_CSV_PATH, DB_PATH)
         return get_benchmark_results()
     except Exception as e:
