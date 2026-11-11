@@ -83,3 +83,4 @@ def seed_benchmark_data(db_path: str = DB_PATH, gt_csv_path: str = GT_CSV_PATH):
 
 if __name__ == "__main__":
     seed_benchmark_data()
+
