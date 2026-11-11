@@ -10,6 +10,9 @@ import pandas as pd
 from datetime import datetime
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+import sys
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 DB_PATH = os.path.join(ROOT_DIR, "database", "alerts.db")
 GT_CSV_PATH = os.path.join(ROOT_DIR, "data", "ground_truth.csv")
 TEST_SPLIT_PATH = os.path.join(ROOT_DIR, "data", "splits", "test.csv")
