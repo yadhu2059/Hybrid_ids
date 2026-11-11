@@ -782,20 +782,103 @@ def reset_database():
     broadcast_event("reset", {})
     return {"status": "success", "message": "Database, logs, and benchmark cache successfully reset."}
 
+INJECT_MAP = {
+    "WebAttack-SQLi": (1000010, "Web Attack SQL Injection", "Web Attack - SQL Injection", 80, "TCP", 3, 1500),
+    "WebAttack-XSS": (1000011, "Web Attack Cross-Site Scripting (XSS)", "Web Attack - XSS", 80, "TCP", 3, 1200),
+    "DoS-LOIC-UDP": (1000001, "DoS High Volume UDP Flood LOIC", "DoS-LOIC-UDP", 80, "UDP", 25, 12000),
+    "PortScan-TCP-SYN": (1000006, "Port Scan TCP SYN Probing", "PortScan-Connect", 80, "TCP", 12, 600),
+    "BruteForce-SSH": (1000008, "Brute Force SSH-Patator Volumetric Burst", "BruteForce-SSH-Patator", 22, "TCP", 6, 800),
+    "Botnet-C2-Beacon": (1000012, "Botnet C2 Heartbeat Beacon", "Botnet-C2-Beaconing", 8080, "TCP", 4, 400),
+    "Infiltration-SMB": (1000013, "Infiltration SMB/C2 Lateral Sweep", "Infiltration", 445, "TCP", 3, 900)
+}
+
 @app.post("/api/inject")
 def inject_attack(req: dict):
+    from src.eve_ingestor import generate_dynamic_reason
+    from app.ml.fusion import HybridFusionEngine
+    from datetime import datetime, timezone
+
     atk_type = req.get("attack_type", "WebAttack-SQLi")
     tgt = req.get("target_host", "192.168.10.50")
-    try:
-        res = inject_attack_into_pcap_queue(
-            attack_type=atk_type,
-            target_ip=tgt,
-            base_pcap_path=PCAP_PATH,
-            gt_csv_path=GT_CSV_PATH
-        )
-        return {"status": "success", "result": res}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    
+    info = INJECT_MAP.get(atk_type, (1000010, "Injected Attack", "Web Attack", 80, "TCP", 3, 1000))
+    sid, sig_name, cat, dport, proto, pkts, bytes_cnt = info
+    src_ip = "203.0.113.88"
+    src_port = 55000 + (sid % 1000)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    reason = generate_dynamic_reason(
+        sig_name=sig_name, sid=sid, src_ip=src_ip, src_port=src_port,
+        dest_ip=tgt, dest_port=dport, proto=proto, category=cat,
+        pkts=pkts, bytes_count=bytes_cnt, duration=0.05
+    )
+
+    # Insert into SQLite alerts
+    init_database(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO alerts (
+            timestamp, src_ip, src_port, dest_ip, dest_port, proto,
+            signature_id, signature, category, severity,
+            bytes_toserver, pkts_toserver, bytes_toclient, pkts_toclient, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        now_iso, src_ip, src_port, tgt, dport, proto,
+        sid, sig_name, cat, 1, bytes_cnt, pkts, 200, 2, reason
+    ))
+    conn.commit()
+    conn.close()
+
+    # Pass through ML Fusion Engine
+    engine = HybridFusionEngine()
+    flow_event = {
+        "timestamp": now_iso,
+        "src_ip": src_ip,
+        "src_port": src_port,
+        "dest_ip": tgt,
+        "dest_port": dport,
+        "proto": proto,
+        "flow": {
+            "age": 0.05,
+            "pkts_toserver": pkts,
+            "bytes_toserver": bytes_cnt,
+            "pkts_toclient": 2,
+            "bytes_toclient": 200,
+            "state": "established",
+            "reason": "shutdown"
+        },
+        "tcp": {"tcp_flags": "18"},
+        "app_proto": "http" if dport == 80 else "failed"
+    }
+    fusion_rec = engine.process_flow(flow_event)
+    HybridFusionEngine.persist_fusion_records([fusion_rec], DB_PATH)
+
+    # Broadcast real-time SSE events to connected UI clients
+    alert_payload = {
+        "signature": sig_name,
+        "signature_id": sid,
+        "src_ip": src_ip,
+        "dest_ip": tgt,
+        "dest_port": dport,
+        "severity": 1,
+        "timestamp": now_iso
+    }
+    broadcast_event("new_alert", alert_payload)
+    broadcast_event("new_ml_prediction", fusion_rec)
+
+    return {
+        "status": "success",
+        "result": {
+            "attack_type": atk_type,
+            "signature_id": sid,
+            "signature": sig_name,
+            "packets_injected": pkts,
+            "severity": 1,
+            "reason": reason,
+            "ml_decision": fusion_rec.get("fusion_status", "HYBRID_CONFIRMED")
+        }
+    }
 
 @app.get("/api/stream/events")
 async def stream_events(request: Request):
