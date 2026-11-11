@@ -183,3 +183,4 @@ def format_evaluation_table(eval_results: Dict[str, Any]) -> str:
         "=" * 78
     ])
     return "\n".join(lines)
+

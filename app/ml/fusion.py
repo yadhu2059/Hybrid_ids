@@ -202,3 +202,4 @@ class HybridFusionEngine:
         conn.commit()
         conn.close()
         return len(tuples)
+

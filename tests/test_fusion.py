@@ -157,3 +157,4 @@ def test_persist_fusion_records_and_wal():
         assert row[0] == "F1"
         assert row[1] == "BENIGN"
         conn.close()
+

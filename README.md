@@ -103,28 +103,92 @@ Evaluated across **6,216 ground-truth network flows** containing Web Attacks, In
 
 ---
 
+## 🧠 Machine Learning Layer & Hybrid Fusion Engine
+
+The machine learning layer makes the **"Hybrid"** in Hybrid-IDS real by combining deterministic signature detection with behavioral flow anomaly classification while preserving:
+- **Deterministic Explainability**: Every alert includes exact rule conditions or ML feature attribution $z$-scores.
+- **High Throughput**: **$8.33\ \mu\text{s}$ per flow** CPU inference latency ($> 120,000$ flows/s).
+- **Zero Packet Drops**: Completed flows are tailed asynchronously out-of-band without blocking Suricata's capture threads.
+- **Zero Data Leakage**: Enforces strict chronological time-based splitting (train Mon–Wed, test Thu–Fri).
+
+### 25-Feature Shared Extraction Vector (`app/ml/features.py`)
+Features are derived strictly from Suricata EVE `flow` records with 100% training/runtime parity:
+1. `duration`, `pkts_toserver`, `pkts_toclient`, `total_pkts`, `bytes_toserver`, `bytes_toclient`, `total_bytes`
+2. `bytes_per_sec`, `pkts_per_sec`, `bytes_ratio`, `pkts_ratio`
+3. `avg_pkt_size`, `avg_pkt_size_toserver`, `avg_pkt_size_toclient`
+4. `dest_port`, `dest_port_is_privileged` ($< 1024$), `proto_num`, `app_proto_code`
+5. `flow_state_code`, `flow_reason_code`
+6. `tcp_flag_syn`, `tcp_flag_fin`, `tcp_flag_rst`, `tcp_flag_psh`, `tcp_flag_ack`
+
+### Hybrid Fusion Arbitration Matrix (`app/ml/fusion.py`)
+- **`CORROBORATED`**: Signature matched + ML attack $\rightarrow$ Elevated Priority 1 Alert with dual explanation.
+- **`SIGNATURE_ONLY`**: Signature matched + ML benign $\rightarrow$ Deterministic rule takes precedence (no security regression).
+- **`ANOMALY_ONLY`**: Signature silent + ML anomaly $\rightarrow$ Zero-day or evasion suspect with top-3 anomalous feature z-scores.
+- **`BENIGN`**: Signature silent + ML baseline $\rightarrow$ Verified clean flow.
+
+### Running ML Pipelines & Tests
+
+```bash
+# 1. Run complete unit test suite (31 tests)
+python -m pytest tests/
+
+# 2. Extract ML features from Suricata EVE log
+python scripts/extract_features.py --input logs/eve.json --output data/extracted_features.csv
+
+# 3. Clean and split dataset with strict chronological time-based partitions
+python scripts/prepare_dataset.py --input data/ground_truth.csv --output-dir data/splits
+
+# 4. Train LightGBM model and generate scientific evaluation report
+python -m app.ml.train
+```
+
+---
+
 ## 📂 Project Structure
 
 ```
 ├── app/
 │   ├── server.py              # FastAPI application server, SSE event hub & REST API
+│   ├── ml/                    # Machine Learning subsystem
+│   │   ├── features.py        # Shared 25-feature extractor (100% runtime/training parity)
+│   │   ├── dataset.py         # Data cleaning, deduplication & time-based splitting
+│   │   ├── model.py           # LightGBM classifier & statistical feature-attribution engine
+│   │   ├── evaluate.py        # Scientific evaluation (per-class PR-AUC, F1, confusion matrix)
+│   │   ├── train.py           # Model training and artifact persistence pipeline
+│   │   └── fusion.py          # Hybrid Fusion Engine & SQLite WAL persistence
 │   └── static/
-│       ├── index.html         # Responsive operations dashboard SPA
+│       ├── index.html         # Responsive operations dashboard SPA with Hybrid ML tab
 │       ├── styles.css         # Modern dark-mode UI stylesheet
 │       └── app.js             # Client-side reactivity, Plotly charts & SSE listener
 ├── config/
 │   ├── custom_rules.rules     # Calibrated Suricata detection rules (SIDs 1000001-1000014)
 │   └── suricata.yaml          # Suricata engine runtime configuration
 ├── data/
-│   └── ground_truth.csv       # Extracted benchmark flow ground-truth labels
+│   ├── ground_truth.csv       # Extracted benchmark flow ground-truth labels
+│   └── splits/                # Chronologically split train, val, and test partitions
 ├── database/
-│   ├── alerts.db              # SQLite storage for live alerts and evaluations
-│   └── schema.sql             # Relational database schema with 5-tuple indices
+│   ├── alerts.db              # SQLite storage for live alerts, evaluations & ML predictions
+│   └── schema.sql             # Relational database schema with WAL mode pragmas
+├── docs/
+│   └── ML_DESIGN.md           # Machine learning layer design & specification document
+├── models/
+│   ├── hybrid_model.joblib    # Persisted LightGBM model artifact
+│   └── evaluation_report.json # Scientific evaluation metrics
+├── scripts/
+│   ├── extract_features.py    # CLI feature extractor
+│   └── prepare_dataset.py     # CLI dataset cleaner & chronological splitter
 ├── src/
 │   ├── alert_notifier.py      # Rule complexity parser and webhook notification dispatcher
 │   ├── attack_injector.py     # Scapy attack synthesis and injection module
+│   ├── benchmark.py           # Throughput and RSS memory benchmark engine
 │   ├── evaluator.py           # 5-tuple flow matching, attribution, and confusion matrix engine
-│   └── eve_ingestor.py        # Live Suricata subprocess runner & eve.json tailer
+│   └── eve_ingestor.py        # Live Suricata subprocess runner & eve.json tailer (Alert + Flow)
+├── tests/
+│   ├── test_features.py       # Unit tests for shared feature extractor
+│   ├── test_dataset.py        # Unit tests for dataset cleaning and chronological splits
+│   ├── test_model.py          # Unit tests for model training and inference
+│   ├── test_fusion.py         # Unit tests for hybrid decision fusion logic
+│   └── test_api.py            # Unit tests for FastAPI REST endpoints
 ├── Dockerfile                 # Docker container definition
 ├── requirements.txt           # Python dependency manifest
 └── README.md                  # System documentation & reference

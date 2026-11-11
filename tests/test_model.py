@@ -141,3 +141,4 @@ def test_compute_multiclass_pr_auc():
     assert "macro_avg" in pr_aucs
     assert pr_aucs["Benign"] > 0.8
     assert pr_aucs["Attack"] > 0.8
+

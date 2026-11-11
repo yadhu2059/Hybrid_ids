@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--benchmark", action="store_true", help="Benchmark processing speed, throughput, and memory")
     parser.add_argument("--dashboard", action="store_true", help="Launch Streamlit visualization dashboard")
     parser.add_argument("--inject", type=str, default=None, help="Inject attack into PCAP queue (e.g. WebAttack-SQLi, DoS-LOIC-UDP)")
+    parser.add_argument("--ml-train", action="store_true", help="Train and evaluate hybrid ML model on chronological splits")
     parser.add_argument("--pcap", type=str, default=default_pcap, help="Path to input PCAP file")
     parser.add_argument("--db", type=str, default="database/alerts.db", help="Path to SQLite database")
     parser.add_argument("--all", action="store_true", help="Run full pipeline end-to-end")
@@ -78,10 +79,16 @@ def main():
 
     # 5. Resource Benchmark
     if args.benchmark or args.all:
-        print("\n[STEP 4/4] Running system performance & memory benchmark...")
+        print("\n[STEP 4/5] Running system performance & memory benchmark...")
         bench = run_benchmark_pipeline(pcap_path, gt_csv, db_path)
 
-    # 6. Replay Attack Injection
+    # 6. Machine Learning Model Training & Scientific Evaluation
+    if args.ml_train or args.all:
+        print("\n[STEP 5/5] Training hybrid ML classifier & evaluating on held-out test split...")
+        from app.ml.train import train_pipeline
+        train_pipeline()
+
+    # 7. Replay Attack Injection
     if args.inject:
         print(f"\n[*] Injecting attack into replay queue: {args.inject}...")
         res = inject_attack_into_pcap_queue(args.inject, base_pcap_path=pcap_path, gt_csv_path=gt_csv)
@@ -91,7 +98,7 @@ def main():
     print("[+] Pipeline execution finished successfully.")
     print("=" * 70)
 
-    # 7. Modern Full-Stack Web Dashboard
+    # 8. Modern Full-Stack Web Dashboard
     if args.dashboard:
         print("\n[+] Launching Modern Web Dashboard on http://localhost:8000 ...")
         cmd = [sys.executable, "-m", "uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]

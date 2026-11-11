@@ -198,3 +198,4 @@ class HybridClassifier:
         instance.feature_names_ = payload["feature_names"]
         instance.benign_stats_ = payload["benign_stats"]
         return instance
+
