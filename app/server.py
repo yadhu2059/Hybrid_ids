@@ -280,6 +280,12 @@ def _large_traffic_worker():
             for na in batch:
                 broadcast_event("new_alert", na)
 
+        if hasattr(_active_tailer, "new_ml_predictions_buffer") and _active_tailer.new_ml_predictions_buffer:
+            ml_batch = _active_tailer.new_ml_predictions_buffer[:15]
+            del _active_tailer.new_ml_predictions_buffer[:15]
+            for nml in ml_batch:
+                broadcast_event("new_ml_prediction", nml)
+
         broadcast_event("large_traffic_progress", dict(large_traffic_state))
 
     # Handle completion or graceful stop
@@ -554,11 +560,13 @@ def get_rules():
 @app.post("/api/reset")
 def reset_database():
     global _eval_cache, large_traffic_state
+    init_database(DB_PATH)
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM alerts")
         cur.execute("DELETE FROM evaluation_flows")
+        cur.execute("DELETE FROM ml_predictions")
         conn.commit()
     finally:
         conn.close()
@@ -611,6 +619,127 @@ async def stream_events(request: Request):
             if q in event_subscribers:
                 event_subscribers.remove(q)
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# ==============================================================================
+# MACHINE LEARNING & HYBRID FUSION ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/ml/metrics")
+def get_ml_metrics():
+    """Returns scientific evaluation metrics computed on held-out test data."""
+    report_path = os.path.join(ROOT_DIR, "models", "evaluation_report.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to read evaluation report: {str(e)}"}
+    return {
+        "status": "unverified",
+        "message": "ML evaluation metrics not yet computed. Run python -m app.ml.train to generate report."
+    }
+
+@app.get("/api/ml/predictions")
+def get_ml_predictions(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """Returns paginated hybrid ML predictions with explainability attribution."""
+    if not os.path.exists(DB_PATH):
+        return {"predictions": [], "total": 0}
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        query = (
+            "SELECT id, flow_id, timestamp, src_ip, src_port, dest_ip, dest_port, proto, "
+            "predicted_label, is_anomaly, confidence, attack_probability, "
+            "top_contributing_features, fusion_status, signature_id, signature, "
+            "explainability_summary FROM ml_predictions WHERE 1=1"
+        )
+        params = []
+        if status:
+            query += " AND fusion_status = ?"
+            params.append(status.upper())
+
+        count_cur = conn.cursor()
+        count_cur.execute(f"SELECT COUNT(1) FROM ({query})", params)
+        total = count_cur.fetchone()[0]
+
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        preds = []
+        for r in rows:
+            top_feats = []
+            if r[12]:
+                try:
+                    top_feats = json.loads(r[12]) if isinstance(r[12], str) else r[12]
+                except Exception:
+                    top_feats = []
+
+            preds.append({
+                "id": r[0],
+                "flow_id": r[1],
+                "timestamp": r[2],
+                "src_ip": r[3],
+                "src_port": r[4],
+                "dest_ip": r[5],
+                "dest_port": r[6],
+                "proto": r[7],
+                "predicted_label": r[8],
+                "is_anomaly": r[9],
+                "confidence": r[10],
+                "attack_probability": r[11],
+                "top_contributing_features": top_feats,
+                "fusion_status": r[13],
+                "signature_id": r[14],
+                "signature": r[15],
+                "explainability_summary": r[16]
+            })
+
+        return {"predictions": preds, "total": total}
+    except Exception as e:
+        return {"predictions": [], "total": 0, "error": str(e)}
+    finally:
+        conn.close()
+
+@app.get("/api/ml/fusion/summary")
+def get_fusion_summary():
+    """Returns distribution of hybrid fusion decisions (Corroborated, Anomaly-only, etc.)."""
+    if not os.path.exists(DB_PATH):
+        return {
+            "total": 0,
+            "corroborated": 0,
+            "anomaly_only": 0,
+            "signature_only": 0,
+            "benign": 0
+        }
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        total = cur.execute("SELECT COUNT(1) FROM ml_predictions").fetchone()[0]
+        cur.execute("SELECT fusion_status, COUNT(1) FROM ml_predictions GROUP BY fusion_status")
+        fmap = dict(cur.fetchall())
+        return {
+            "total": total,
+            "corroborated": fmap.get("CORROBORATED", 0),
+            "anomaly_only": fmap.get("ANOMALY_ONLY", 0),
+            "signature_only": fmap.get("SIGNATURE_ONLY", 0),
+            "benign": fmap.get("BENIGN", 0)
+        }
+    except Exception:
+        return {
+            "total": 0,
+            "corroborated": 0,
+            "anomaly_only": 0,
+            "signature_only": 0,
+            "benign": 0
+        }
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     import uvicorn

@@ -6,9 +6,18 @@ document.addEventListener("DOMContentLoaded", () => {
   loadLargeTrafficStatus();
   loadAlerts();
   loadRules();
+  loadMLMetrics();
+  loadFusionSummary();
+  loadMLPredictions();
   initSSE();
 
   // Button Listeners
+  const btnRefreshMl = document.getElementById("btn-refresh-ml");
+  if (btnRefreshMl) btnRefreshMl.addEventListener("click", () => {
+    loadMLMetrics();
+    loadFusionSummary();
+    loadMLPredictions();
+  });
   const btnRunBm = document.getElementById("btn-run-benchmark");
   if (btnRunBm) btnRunBm.addEventListener("click", runAccuracyBenchmark);
 
@@ -42,6 +51,7 @@ function initTabs() {
       const titles = {
         benchmark: "Accuracy Benchmark",
         "large-traffic": "Large Traffic Analysis",
+        "hybrid-ml": "Hybrid ML & Decision Fusion",
         telemetry: "Intrusion Telemetry & Alerts",
         rules: "Rule Intelligence & SIDs",
         simulator: "Attack Injection Simulator"
@@ -50,6 +60,7 @@ function initTabs() {
 
       if (targetTab === "benchmark") loadBenchmarkResults();
       else if (targetTab === "large-traffic") loadLargeTrafficStatus();
+      else if (targetTab === "hybrid-ml") { loadMLMetrics(); loadFusionSummary(); loadMLPredictions(); }
       else if (targetTab === "telemetry") loadAlerts();
       else if (targetTab === "rules") loadRules();
     });
@@ -670,11 +681,17 @@ function initSSE() {
       } else if (msg.type === "new_alert") {
         appendBoundedNotification(msg.data);
         loadStatus();
+      } else if (msg.type === "new_ml_prediction") {
+        appendLiveMLPrediction(msg.data);
+        loadFusionSummary();
       } else if (msg.type === "reset") {
         loadStatus();
         loadBenchmarkResults();
         loadLargeTrafficStatus();
         loadAlerts();
+        loadMLMetrics();
+        loadFusionSummary();
+        loadMLPredictions();
       }
     } catch (e) {
       // keepalive
@@ -684,5 +701,107 @@ function initSSE() {
   evtSource.onerror = () => {
     // auto-reconnects
   };
+}
+
+// ==============================================================================
+// 6. HYBRID ML & FUSION TELEMETRY
+// ==============================================================================
+
+async function loadMLMetrics() {
+  try {
+    const res = await fetch("/api/ml/metrics");
+    const data = await res.json();
+    if (data.evaluation_summary) {
+      const summary = data.evaluation_summary;
+      const praucEl = document.getElementById("ml-kpi-pr-auc");
+      const latencyEl = document.getElementById("ml-kpi-latency");
+      if (praucEl) praucEl.innerText = `${(summary.macro_pr_auc * 100).toFixed(1)}%`;
+      if (latencyEl) latencyEl.innerText = `${summary.inference_latency_us_per_flow} µs`;
+
+      const tbody = document.getElementById("ml-metrics-tbody");
+      if (tbody && data.per_class_metrics) {
+        tbody.innerHTML = data.per_class_metrics.map(c => `
+          <tr>
+            <td style="font-weight:700; color:#0f172a;">${c.class_name}</td>
+            <td>${(c.precision * 100).toFixed(1)}%</td>
+            <td>${(c.recall * 100).toFixed(1)}%</td>
+            <td style="font-weight:700; color:#2563eb;">${(c.f1_score * 100).toFixed(1)}%</td>
+            <td style="font-weight:700; color:#10b981;">${(c.pr_auc * 100).toFixed(1)}%</td>
+            <td>${c.support.toLocaleString()}</td>
+          </tr>
+        `).join("");
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load ML metrics:", err);
+  }
+}
+
+async function loadFusionSummary() {
+  try {
+    const res = await fetch("/api/ml/fusion/summary");
+    const data = await res.json();
+    const corrEl = document.getElementById("ml-kpi-corroborated");
+    const anomEl = document.getElementById("ml-kpi-anomaly");
+    if (corrEl) corrEl.innerText = (data.corroborated || 0).toLocaleString();
+    if (anomEl) anomEl.innerText = (data.anomaly_only || 0).toLocaleString();
+  } catch (err) {
+    console.error("Failed to load fusion summary:", err);
+  }
+}
+
+async function loadMLPredictions() {
+  try {
+    const res = await fetch("/api/ml/predictions?limit=50");
+    const data = await res.json();
+    const tbody = document.getElementById("ml-predictions-tbody");
+    if (!tbody) return;
+
+    if (!data.predictions || data.predictions.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:16px;">No hybrid flow events captured yet. Run traffic replay to observe real-time classification.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = data.predictions.map(renderPredictionRow).join("");
+  } catch (err) {
+    console.error("Failed to load ML predictions:", err);
+  }
+}
+
+function appendLiveMLPrediction(p) {
+  const tbody = document.getElementById("ml-predictions-tbody");
+  if (!tbody) return;
+
+  const rowHtml = renderPredictionRow(p);
+  tbody.insertAdjacentHTML("afterbegin", rowHtml);
+  while (tbody.children.length > 50) {
+    tbody.removeChild(tbody.lastChild);
+  }
+}
+
+function renderPredictionRow(p) {
+  let badgeStyle = "background:#f1f5f9; color:#475569;";
+  let statusText = p.fusion_status;
+  if (p.fusion_status === "CORROBORATED") {
+    badgeStyle = "background:#fee2e2; color:#dc2626; border:1px solid #fecaca;";
+  } else if (p.fusion_status === "ANOMALY_ONLY") {
+    badgeStyle = "background:#fef3c7; color:#d97706; border:1px solid #fde68a;";
+  } else if (p.fusion_status === "SIGNATURE_ONLY") {
+    badgeStyle = "background:#e0e7ff; color:#4f46e5; border:1px solid #c7d2fe;";
+  } else if (p.fusion_status === "BENIGN") {
+    badgeStyle = "background:#dcfce7; color:#16a34a; border:1px solid #bbf7d0;";
+  }
+
+  const timeStr = p.timestamp ? p.timestamp.substring(11, 19) : "--:--:--";
+  return `
+    <tr>
+      <td style="font-family:monospace; font-size:11px; color:#64748b;">${timeStr}</td>
+      <td style="font-family:monospace; font-size:11px;"><strong>${p.src_ip}:${p.src_port}</strong> ➔ <strong>${p.dest_ip}:${p.dest_port}</strong> <span style="font-size:10px; color:#94a3b8;">(${p.proto})</span></td>
+      <td style="font-weight:700; color:#0f172a;">${p.predicted_label}</td>
+      <td><span style="font-size:10px; font-weight:800; padding:3px 7px; border-radius:6px; ${badgeStyle}">${statusText}</span></td>
+      <td style="font-weight:700;">${(p.confidence * 100).toFixed(1)}%</td>
+      <td style="font-size:11px; color:#334155; line-height:1.4;">${p.explainability_summary}</td>
+    </tr>
+  `;
 }
 
