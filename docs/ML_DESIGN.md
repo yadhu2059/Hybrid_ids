@@ -203,3 +203,4 @@ Because intrusion detection datasets are heavily imbalanced (>80% Benign), accur
 - **Phase 3**: Model training & Evaluation reporting (`app/ml/train.py`, `app/ml/evaluate.py`)
 - **Phase 4**: Hybrid Fusion Engine & EVE Tailer integration (`app/ml/fusion.py`, `src/eve_ingestor.py`)
 - **Phase 5**: API endpoints & Dashboard visualization updates (`app/server.py`, `app/static/`)
+
