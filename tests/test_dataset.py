@@ -142,3 +142,4 @@ def test_prepare_ml_features_and_labels():
     assert y.tolist() == ["Benign", "BruteForce-SSH-Patator"]
     assert not X.isna().any().any()
     assert not np.isinf(X.to_numpy()).any()
+
