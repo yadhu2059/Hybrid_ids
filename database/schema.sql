@@ -1,4 +1,7 @@
--- SQLite DDL Schema for Signature-Based IDS Engine
+-- SQLite DDL Schema for Hybrid Signature & Machine Learning IDS Engine
+
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,3 +63,29 @@ CREATE TABLE IF NOT EXISTS benchmark_metrics (
     total_alerts INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS ml_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    src_ip TEXT NOT NULL,
+    src_port INTEGER NOT NULL,
+    dest_ip TEXT NOT NULL,
+    dest_port INTEGER NOT NULL,
+    proto TEXT NOT NULL,
+    predicted_label TEXT NOT NULL,
+    is_anomaly INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    attack_probability REAL NOT NULL,
+    top_contributing_features TEXT NOT NULL, -- JSON formatted list of top features
+    fusion_status TEXT NOT NULL,           -- 'CORROBORATED', 'ANOMALY_ONLY', 'SIGNATURE_ONLY', 'BENIGN'
+    signature_id INTEGER DEFAULT 0,
+    signature TEXT DEFAULT '',
+    explainability_summary TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ml_pred_5tuple ON ml_predictions(src_ip, src_port, dest_ip, dest_port, proto);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_fusion ON ml_predictions(fusion_status);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_time ON ml_predictions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_label ON ml_predictions(predicted_label);

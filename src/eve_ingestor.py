@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone
 
 from src.alert_notifier import AlertNotificationDispatcher
+from app.ml.fusion import HybridFusionEngine
 
 
 def init_database(db_path: str = "database/alerts.db", schema_path: str = "database/schema.sql"):
@@ -19,6 +20,8 @@ def init_database(db_path: str = "database/alerts.db", schema_path: str = "datab
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode = WAL;")
+    cursor.execute("PRAGMA synchronous = NORMAL;")
     if os.path.exists(schema_path):
         with open(schema_path, "r", encoding="utf-8") as f:
             cursor.executescript(f.read())
@@ -217,10 +220,14 @@ def ingest_eve_to_sqlite(
     cursor = conn.cursor()
 
     cursor.execute("DELETE FROM alerts")
+    cursor.execute("DELETE FROM ml_predictions")
+    conn.commit()
     notifier = AlertNotificationDispatcher()
+    fusion_engine = HybridFusionEngine()
 
     inserted_count = 0
     batch_records = []
+    ml_records = []
     BATCH_SIZE = 5000
 
     with open(eve_log_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -233,7 +240,16 @@ def ingest_eve_to_sqlite(
             except Exception:
                 continue
 
-            if event.get("event_type") != "alert":
+            evt_type = event.get("event_type")
+            if evt_type == "flow":
+                fusion_rec = fusion_engine.process_flow(event)
+                ml_records.append(fusion_rec)
+                if len(ml_records) >= BATCH_SIZE:
+                    HybridFusionEngine.persist_fusion_records(ml_records, db_path)
+                    ml_records.clear()
+                continue
+
+            if evt_type != "alert":
                 continue
 
             flow_obj = event.get("flow", {})
@@ -275,6 +291,12 @@ def ingest_eve_to_sqlite(
                 bytes_toserver, pkts_toserver, bytes_toclient, pkts_toclient,
                 reason
             ))
+            fusion_engine.register_alerts([{
+                "src_ip": src_ip, "src_port": src_port,
+                "dest_ip": dest_ip, "dest_port": dest_port,
+                "proto": proto, "signature_id": sig_id,
+                "signature": sig_name, "severity": severity
+            }])
 
             if len(batch_records) >= BATCH_SIZE:
                 cursor.executemany("""
@@ -317,6 +339,10 @@ def ingest_eve_to_sqlite(
         inserted_count += len(batch_records)
         batch_records.clear()
 
+    if ml_records:
+        HybridFusionEngine.persist_fusion_records(ml_records, db_path)
+        ml_records.clear()
+
     conn.close()
     print(f"[+] Ingestion complete: {inserted_count} genuine Suricata alerts committed to SQLite ({db_path})")
     return inserted_count
@@ -330,6 +356,8 @@ class LiveEveTailer:
         self.stop_event = False
         self.total_streamed = 0
         self.new_alerts_buffer = []
+        self.new_ml_predictions_buffer = []
+        self.fusion_engine = HybridFusionEngine()
 
     def start_tailing(self):
         import threading
@@ -342,6 +370,7 @@ class LiveEveTailer:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM alerts")
+        cursor.execute("DELETE FROM ml_predictions")
         conn.commit()
 
         # Wait for eve.json to be created
@@ -353,6 +382,7 @@ class LiveEveTailer:
             return
 
         batch = []
+        ml_batch = []
         with open(self.eve_path, "r", encoding="utf-8", errors="ignore") as f:
             while not self.stop_event:
                 line = f.readline()
@@ -369,6 +399,9 @@ class LiveEveTailer:
                         conn.commit()
                         self.total_streamed += len(batch)
                         batch.clear()
+                    if ml_batch:
+                        HybridFusionEngine.persist_fusion_records(ml_batch, self.db_path)
+                        ml_batch.clear()
                     time.sleep(0.3)
                     continue
 
@@ -381,7 +414,18 @@ class LiveEveTailer:
                 except Exception:
                     continue
 
-                if event.get("event_type") != "alert":
+                evt_type = event.get("event_type")
+                if evt_type == "flow":
+                    fusion_rec = self.fusion_engine.process_flow(event)
+                    ml_batch.append(fusion_rec)
+                    if fusion_rec["fusion_status"] in ["CORROBORATED", "ANOMALY_ONLY", "SIGNATURE_ONLY"]:
+                        self.new_ml_predictions_buffer.append(fusion_rec)
+                    if len(ml_batch) >= 50:
+                        HybridFusionEngine.persist_fusion_records(ml_batch, self.db_path)
+                        ml_batch.clear()
+                    continue
+
+                if evt_type != "alert":
                     continue
 
                 flow_obj = event.get("flow", {})
@@ -432,6 +476,12 @@ class LiveEveTailer:
                     "severity": severity,
                     "timestamp": ts
                 })
+                self.fusion_engine.register_alerts([{
+                    "src_ip": src_ip, "src_port": src_port,
+                    "dest_ip": dest_ip, "dest_port": dest_port,
+                    "proto": proto, "signature_id": sig_id,
+                    "signature": sig_name, "severity": severity
+                }])
 
                 if len(batch) >= 50:
                     cursor.executemany("""
@@ -459,6 +509,10 @@ class LiveEveTailer:
                 conn.commit()
                 self.total_streamed += len(batch)
                 batch.clear()
+
+            if ml_batch:
+                HybridFusionEngine.persist_fusion_records(ml_batch, self.db_path)
+                ml_batch.clear()
 
         conn.close()
 
