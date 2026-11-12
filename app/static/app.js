@@ -83,19 +83,67 @@ async function loadBenchmarkResults() {
 
 async function runAccuracyBenchmark() {
   const btn = document.getElementById("btn-run-benchmark");
+  const cards = document.querySelectorAll("#tab-benchmark .metric-card, #tab-benchmark .kpi-card, #bm-accuracy");
+  
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = `<span>⏳</span> Evaluating 6,216 flows...`;
+    btn.style.background = "#4338ca";
   }
+
+  // Visual dimming on cards to show active refresh
+  cards.forEach(c => {
+    c.style.transition = "opacity 0.2s, box-shadow 0.4s";
+    c.style.opacity = "0.4";
+  });
+
+  const t0 = performance.now();
   try {
     const res = await fetch("/api/benchmark/run", { method: "POST" });
     const data = await res.json();
+    
+    // Ensure at least 400ms of visual loading feedback
+    const elapsed = performance.now() - t0;
+    if (elapsed < 400) {
+      await new Promise(r => setTimeout(r, 400 - elapsed));
+    }
+
     renderBenchmarkData(data);
+
+    // Flash glow effect on metric cards
+    cards.forEach(c => {
+      c.style.opacity = "1.0";
+      c.style.boxShadow = "0 0 16px rgba(16, 185, 129, 0.5)";
+      setTimeout(() => { c.style.boxShadow = ""; }, 1500);
+    });
+
+    // Update status badge with timestamp
+    const badge = document.getElementById("engine-status-pill");
+    if (badge) {
+      const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      badge.innerHTML = `● Verified (${nowStr})`;
+      badge.style.background = "#dcfce7";
+      badge.style.color = "#15803d";
+    }
+
+    // Success button state
+    if (btn) {
+      btn.style.background = "#10b981";
+      btn.innerHTML = `<span>✅</span> 6,216 Flows Verified!`;
+      await new Promise(r => setTimeout(r, 1200));
+    }
   } catch (err) {
     console.error("Benchmark run failed:", err);
+    cards.forEach(c => { c.style.opacity = "1.0"; });
+    if (btn) {
+      btn.style.background = "#ef4444";
+      btn.innerHTML = `<span>⚠️</span> Evaluation Failed`;
+      await new Promise(r => setTimeout(r, 1200));
+    }
   } finally {
     if (btn) {
       btn.disabled = false;
+      btn.style.background = "#2563eb";
       btn.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="5 3 19 12 5 21 5 3"></polygon>
