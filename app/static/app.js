@@ -1,4 +1,12 @@
 // Modern Hybrid IDS Client Application (Benchmark & Operational Large-Traffic Analysis)
+
+// Global execution guard to prevent multiple simultaneous benchmark runs
+let isBenchmarking = false;
+
+// Expose benchmark execution to global window scope so HTML onclick handlers are always bound
+window.runAccuracyBenchmark = runAccuracyBenchmark;
+window.loadBenchmarkResults = loadBenchmarkResults;
+
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   loadStatus();
@@ -19,7 +27,13 @@ document.addEventListener("DOMContentLoaded", () => {
     loadMLPredictions();
   });
   const btnRunBm = document.getElementById("btn-run-benchmark");
-  if (btnRunBm) btnRunBm.addEventListener("click", runAccuracyBenchmark);
+  if (btnRunBm) {
+    btnRunBm.onclick = runAccuracyBenchmark;
+  }
+  const datasetSelect = document.getElementById("benchmark-dataset-select");
+  if (datasetSelect) {
+    datasetSelect.addEventListener("change", () => loadBenchmarkResults());
+  }
 
   const btnStartLarge = document.getElementById("btn-start-large-pcap");
   if (btnStartLarge) btnStartLarge.addEventListener("click", startLargeTraffic);
@@ -68,12 +82,14 @@ function initTabs() {
 }
 
 // ==============================================================================
-// 1. ACCURACY BENCHMARK LOGIC (6,216 FLOWS)
+// 1. ACCURACY BENCHMARK LOGIC (ACTUAL ML INFERENCE & GROUND-TRUTH)
 // ==============================================================================
 
 async function loadBenchmarkResults() {
   try {
-    const res = await fetch("/api/benchmark/results");
+    const datasetSelect = document.getElementById("benchmark-dataset-select");
+    const split = datasetSelect ? datasetSelect.value : "all";
+    const res = await fetch(`/api/benchmark/results?split=${split}`);
     const data = await res.json();
     renderBenchmarkData(data);
   } catch (err) {
@@ -81,14 +97,42 @@ async function loadBenchmarkResults() {
   }
 }
 
-async function runAccuracyBenchmark() {
+async function runAccuracyBenchmark(event) {
+  if (event) {
+    try { event.preventDefault(); } catch (e) {}
+  }
+  // Prevent multiple simultaneous benchmark executions
+  if (isBenchmarking) {
+    console.warn("Benchmark execution already in progress.");
+    return;
+  }
+  isBenchmarking = true;
+
   const btn = document.getElementById("btn-run-benchmark");
+  const datasetSelect = document.getElementById("benchmark-dataset-select");
+  const split = datasetSelect ? datasetSelect.value : "all";
+  const descEl = document.getElementById("bm-dataset-flows-desc");
+  if (descEl) {
+    descEl.innerText = split === "test" ? "933 flows" : "6,216 flows";
+  }
+
   const cards = document.querySelectorAll("#tab-benchmark .metric-card, #tab-benchmark .kpi-card, #bm-accuracy");
-  
+  const banner = document.getElementById("benchmark-status-banner");
+
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = `<span>⏳</span> Evaluating 6,216 flows...`;
+    btn.style.opacity = "0.75";
+    btn.style.cursor = "not-allowed";
     btn.style.background = "#4338ca";
+    btn.innerHTML = `<span style="display:inline-block; animation:spin 1s linear infinite;">⏳</span> <span>Running Accuracy Benchmark...</span>`;
+  }
+
+  if (banner) {
+    banner.style.display = "block";
+    banner.style.background = "#eff6ff";
+    banner.style.border = "1px solid #bfdbfe";
+    banner.style.color = "#1e40af";
+    banner.innerHTML = `<strong>⚡ Running Real Model Evaluation:</strong> Generating LightGBM model predictions over ground-truth dataset (${split === 'test' ? '933 held-out test flows' : '6,216 full benchmark flows'}). Calculating classification & regression metrics...`;
   }
 
   // Visual dimming on cards to show active refresh
@@ -99,13 +143,22 @@ async function runAccuracyBenchmark() {
 
   const t0 = performance.now();
   try {
-    const res = await fetch("/api/benchmark/run", { method: "POST" });
+    const res = await fetch(`/api/benchmark/run?split=${split}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status}: ${res.statusText}`);
+    }
     const data = await res.json();
+    if (data.status === "error") {
+      throw new Error(data.message || "Benchmark evaluation failed on server");
+    }
     
-    // Ensure at least 400ms of visual loading feedback
+    // Ensure smooth visual transition feedback
     const elapsed = performance.now() - t0;
-    if (elapsed < 400) {
-      await new Promise(r => setTimeout(r, 400 - elapsed));
+    if (elapsed < 350) {
+      await new Promise(r => setTimeout(r, 350 - elapsed));
     }
 
     renderBenchmarkData(data);
@@ -126,23 +179,42 @@ async function runAccuracyBenchmark() {
       badge.style.color = "#15803d";
     }
 
+    // Success notification banner
+    if (banner) {
+      banner.style.display = "block";
+      banner.style.background = "#f0fdf4";
+      banner.style.border = "1px solid #bbf7d0";
+      banner.style.color = "#15803d";
+      banner.innerHTML = `<strong>✅ Benchmark Complete:</strong> Genuine model evaluation calculated across <strong>${(data.total_flows || 0).toLocaleString()} flows</strong> in ${(data.total_eval_time_sec || 0.1).toFixed(2)}s · Exact Accuracy: <strong>${((data.exact_accuracy || 0) * 100).toFixed(2)}%</strong> · Macro F1: <strong>${((data.macro_f1 || 0) * 100).toFixed(2)}%</strong> · MAE: <strong>${(data.mae || 0).toFixed(4)}</strong> · Latency: <strong>${data.latency_us_per_flow || 5} µs/flow</strong>.`;
+    }
+
     // Success button state
     if (btn) {
       btn.style.background = "#10b981";
-      btn.innerHTML = `<span>✅</span> 6,216 Flows Verified!`;
+      btn.innerHTML = `<span>✅</span> Benchmark Complete!`;
       await new Promise(r => setTimeout(r, 1200));
     }
   } catch (err) {
     console.error("Benchmark run failed:", err);
     cards.forEach(c => { c.style.opacity = "1.0"; });
+    if (banner) {
+      banner.style.display = "block";
+      banner.style.background = "#fef2f2";
+      banner.style.border = "1px solid #fecaca";
+      banner.style.color = "#991b1b";
+      banner.innerHTML = `<strong>⚠️ Benchmark Evaluation Failed:</strong> ${err.message || "Failed to execute benchmark."}`;
+    }
     if (btn) {
       btn.style.background = "#ef4444";
       btn.innerHTML = `<span>⚠️</span> Evaluation Failed`;
       await new Promise(r => setTimeout(r, 1200));
     }
   } finally {
+    isBenchmarking = false;
     if (btn) {
       btn.disabled = false;
+      btn.style.opacity = "1.0";
+      btn.style.cursor = "pointer";
       btn.style.background = "#2563eb";
       btn.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -163,6 +235,12 @@ function renderBenchmarkData(data) {
   const f1El = document.getElementById("bm-macro-f1");
   const f1Sub = document.getElementById("bm-macro-sub");
 
+  // Regression / Continuous error metrics
+  const maeEl = document.getElementById("bm-mae");
+  const mseEl = document.getElementById("bm-mse");
+  const rmseEl = document.getElementById("bm-rmse");
+  const r2El = document.getElementById("bm-r2");
+
   const tbody = document.getElementById("benchmark-metrics-tbody");
   const confContainer = document.getElementById("benchmark-confusion-container");
   const attrTbody = document.getElementById("benchmark-attribution-tbody");
@@ -176,13 +254,18 @@ function renderBenchmarkData(data) {
     if (f1El) f1El.innerText = "--";
     if (f1Sub) f1Sub.innerText = "Prec: -- · Rec: --";
 
+    if (maeEl) maeEl.innerText = "--";
+    if (mseEl) mseEl.innerText = "--";
+    if (rmseEl) rmseEl.innerText = "--";
+    if (r2El) r2El.innerText = "--";
+
     if (tbody) tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:20px; color:#94a3b8;">${data.message || 'Click "RUN ACCURACY BENCHMARK" to evaluate.'}</td></tr>`;
     if (confContainer) confContainer.innerHTML = `<div style="text-align:center; padding:20px; color:#94a3b8;">No evaluation recorded yet.</div>`;
     if (attrTbody) attrTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#94a3b8;">Attribution data available after execution.</td></tr>`;
     return;
   }
 
-  // Populate Dynamic Summary Cards
+  // Populate Dynamic Classification Summary Cards
   if (accEl) accEl.innerText = `${(data.exact_accuracy * 100).toFixed(2)}%`;
   if (accSub) accSub.innerText = `${(data.total_tp + data.total_tn).toLocaleString()} / ${data.total_flows.toLocaleString()} flows correct`;
   if (behEl) behEl.innerText = `${(data.behavioural_detection_rate * 100).toFixed(2)}%`;
@@ -190,6 +273,12 @@ function renderBenchmarkData(data) {
   if (farSub) farSub.innerText = `FAR: ${(data.benign_far * 100).toFixed(2)}% (${data.total_fp} FP)`;
   if (f1El) f1El.innerText = `${(data.macro_f1 * 100).toFixed(2)}%`;
   if (f1Sub) f1Sub.innerText = `Prec: ${(data.macro_precision * 100).toFixed(1)}% · Rec: ${(data.macro_recall * 100).toFixed(1)}%`;
+
+  // Populate Regression / Continuous metrics
+  if (maeEl) maeEl.innerText = data.mae !== undefined ? data.mae.toFixed(4) : "--";
+  if (mseEl) mseEl.innerText = data.mse !== undefined ? data.mse.toFixed(4) : "--";
+  if (rmseEl) rmseEl.innerText = data.rmse !== undefined ? data.rmse.toFixed(4) : "--";
+  if (r2El) r2El.innerText = data.r2_score !== undefined ? data.r2_score.toFixed(4) : "--";
 
   // Populate Per-Category Table
   if (tbody && data.category_metrics) {
@@ -213,20 +302,23 @@ function renderBenchmarkData(data) {
     });
   }
 
-  // Populate Multi-Class Confusion Matrix (Exact sum = 6,216)
+  // Populate Multi-Class Confusion Matrix
   if (confContainer && data.confusion_matrix) {
     const cm = data.confusion_matrix;
-    let html = `<table class="ids-table"><thead><tr><th>Ground Truth</th>`;
-    cm.classes.forEach(c => {
+    const gts = cm.ground_truth_labels || cm.classes;
+    const preds = cm.classes;
+    let html = `<table class="ids-table"><thead><tr><th>Ground Truth \\ Predicted</th>`;
+    preds.forEach(c => {
       html += `<th style="text-align:center;">${c}</th>`;
     });
     html += `</tr></thead><tbody>`;
 
-    cm.ground_truth_labels.forEach((gt, rIdx) => {
+    gts.forEach((gt, rIdx) => {
       html += `<tr><td><strong>${gt}</strong></td>`;
-      cm.classes.forEach((c, cIdx) => {
-        const val = cm.matrix[rIdx][cIdx];
-        const isDiag = (gt === c || (gt === 'Benign' && c === 'Benign'));
+      preds.forEach((c, cIdx) => {
+        const rowVals = cm.matrix[rIdx] || [];
+        const val = rowVals[cIdx] !== undefined ? rowVals[cIdx] : 0;
+        const isDiag = (gt === c);
         const bg = val > 0 ? (isDiag ? "#dcfce7" : "#fee2e2") : "#ffffff";
         const color = val > 0 ? (isDiag ? "#15803d" : "#b91c1c") : "#94a3b8";
         html += `<td style="text-align:center; background:${bg}; color:${color}; font-weight:${val > 0 ? '700' : '400'};">${val.toLocaleString()}</td>`;
@@ -384,7 +476,14 @@ function renderLiveCircularChart(st) {
   const total = (st.alerts_count || 0);
   if (total === 0) {
     chartDiv.innerHTML = `<div style="font-size:12px; color:#94a3b8; text-align:center; padding:40px;">No alerts generated yet. Run PCAP to stream live alerts.</div>`;
-    Plotly.purge(chartDiv);
+    if (typeof Plotly !== "undefined" && Plotly.purge) {
+      try { Plotly.purge(chartDiv); } catch (e) {}
+    }
+    return;
+  }
+
+  if (typeof Plotly === "undefined" || !Plotly.react) {
+    chartDiv.innerHTML = `<div style="font-size:12px; color:#0f172a; text-align:center; padding:30px; font-weight:700;">Alerts: ${total.toLocaleString()}<br><span style="font-size:10px; color:#64748b;">(High: ${st.high_alerts || 0} · Med: ${st.med_alerts || 0} · Low: ${st.low_alerts || 0})</span></div>`;
     return;
   }
 
@@ -419,7 +518,11 @@ function renderLiveCircularChart(st) {
   };
 
   const config = { displayModeBar: false, responsive: true };
-  Plotly.react(chartDiv, plotData, layout, config);
+  try {
+    Plotly.react(chartDiv, plotData, layout, config);
+  } catch (err) {
+    console.warn("Plotly render failed:", err);
+  }
 }
 
 // ==============================================================================

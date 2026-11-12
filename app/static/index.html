@@ -153,47 +153,80 @@
           <div class="tab-content active" id="tab-benchmark">
             
             <!-- BENCHMARK CONTROL HEADER -->
-            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">
               <div>
-                <div style="font-size:14px; font-weight:800; color:#0f172a;">6,216-Flow Ground-Truth Evaluation Benchmark</div>
+                <div style="font-size:14px; font-weight:800; color:#0f172a;">Ground-Truth Model Evaluation & Accuracy Benchmark</div>
                 <div style="font-size:12px; color:#64748b; margin-top:2px;">
-                  Dataset: <strong>CICIDS2017 Thursday</strong> · Total: <strong>6,216 flows</strong> (Benign: 4,000 · Brute Force: 1,507 · XSS: 652 · Infiltration: 36 · SQLi: 21)
+                  Dataset: <strong>CICIDS2017 Thursday</strong> · Ground-Truth Evaluated: <strong id="bm-dataset-flows-desc">6,216 flows</strong> (Benign: 4,000 · Brute Force: 1,507 · XSS: 652 · Infiltration: 36 · SQLi: 21)
                 </div>
               </div>
-              <button id="btn-run-benchmark" style="background:#2563eb; color:#fff; border:none; padding:10px 18px; border-radius:10px; font-size:12px; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:8px; box-shadow:0 2px 6px rgba(37,99,235,0.3);">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                </svg>
-                <span>RUN ACCURACY BENCHMARK</span>
-              </button>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <select id="benchmark-dataset-select" style="background:#fff; border:1px solid #cbd5e1; border-radius:10px; padding:9px 12px; font-size:12px; font-weight:700; color:#1e293b; cursor:pointer; outline:none;">
+                  <option value="all" selected>Full Thursday (6,216 flows)</option>
+                  <option value="test">Held-Out Test Split (933 flows)</option>
+                </select>
+                <button id="btn-run-benchmark" onclick="runAccuracyBenchmark(event)" style="background:#2563eb; color:#fff; border:none; padding:10px 18px; border-radius:10px; font-size:12px; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:8px; box-shadow:0 2px 6px rgba(37,99,235,0.3); transition:all 0.2s;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                  </svg>
+                  <span>RUN ACCURACY BENCHMARK</span>
+                </button>
+              </div>
             </div>
+
+            <!-- STATUS / EXECUTION NOTIFICATION BANNER -->
+            <div id="benchmark-status-banner" style="display:none; margin-bottom:16px; padding:12px 16px; border-radius:10px; font-size:12px; font-weight:600; transition:all 0.3s;"></div>
 
             <!-- METHODOLOGY NOTICE -->
             <div style="background:#eff6ff; border-left:4px solid #3b82f6; padding:10px 14px; border-radius:6px; font-size:11px; color:#1e40af; margin-bottom:16px;">
-              <strong>Methodology Note:</strong> This is a deterministic rule-based evaluation benchmark. The 6,216 flows are labelled test samples and are <em>not</em> machine learning training data. Scores reflect genuine flow-level classification against current active signatures.
+              <strong>Scientific ML Evaluation Methodology:</strong> Real-time inference executed across ground-truth flows with the trained LightGBM hybrid model. Computes genuine flow-level multi-class classification metrics (Accuracy, Precision, Recall, F1, Confusion Matrix) and continuous risk metrics (MAE, MSE, RMSE, R² Score) directly against ground-truth labels.
             </div>
 
-            <!-- DYNAMIC KPI CARDS -->
-            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:16px;">
-              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;">
+            <!-- DYNAMIC KPI CARDS: CLASSIFICATION METRICS -->
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:12px;">
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
                 <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Exact Class Accuracy</div>
                 <div style="font-size:22px; font-weight:800; color:#0f172a; margin-top:4px;" id="bm-accuracy">Not yet verified</div>
                 <div style="font-size:11px; color:#64748b;" id="bm-accuracy-sub">Strict exact-match</div>
               </div>
-              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;">
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
                 <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Attack Detection Rate</div>
                 <div style="font-size:22px; font-weight:800; color:#2563eb; margin-top:4px;" id="bm-behavioural">--</div>
                 <div style="font-size:11px; color:#64748b;">Any attack alert detected</div>
               </div>
-              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;">
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
                 <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Benign Specificity</div>
                 <div style="font-size:22px; font-weight:800; color:#10b981; margin-top:4px;" id="bm-specificity">--</div>
                 <div style="font-size:11px; color:#64748b;" id="bm-far-sub">FAR: --</div>
               </div>
-              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;">
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
                 <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Macro F1-Score</div>
                 <div style="font-size:22px; font-weight:800; color:#8b5cf6; margin-top:4px;" id="bm-macro-f1">--</div>
                 <div style="font-size:11px; color:#64748b;" id="bm-macro-sub">Prec: -- · Rec: --</div>
+              </div>
+            </div>
+
+            <!-- DYNAMIC KPI CARDS: REGRESSION & RISK SCORE METRICS -->
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:16px;">
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
+                <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Mean Absolute Error (MAE)</div>
+                <div style="font-size:22px; font-weight:800; color:#0f172a; margin-top:4px;" id="bm-mae">--</div>
+                <div style="font-size:11px; color:#64748b;">Probabilistic attack error</div>
+              </div>
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
+                <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Mean Squared Error (MSE)</div>
+                <div style="font-size:22px; font-weight:800; color:#2563eb; margin-top:4px;" id="bm-mse">--</div>
+                <div style="font-size:11px; color:#64748b;">Quadratic loss penalty</div>
+              </div>
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
+                <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">Root Mean Squared (RMSE)</div>
+                <div style="font-size:22px; font-weight:800; color:#10b981; margin-top:4px;" id="bm-rmse">--</div>
+                <div style="font-size:11px; color:#64748b;">Standard deviation of residuals</div>
+              </div>
+              <div style="background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px;" class="metric-card">
+                <div style="font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase;">R² Determination Score</div>
+                <div style="font-size:22px; font-weight:800; color:#8b5cf6; margin-top:4px;" id="bm-r2">--</div>
+                <div style="font-size:11px; color:#64748b;">Explained variance proportion</div>
               </div>
             </div>
 

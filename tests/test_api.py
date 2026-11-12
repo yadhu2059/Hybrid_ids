@@ -59,3 +59,28 @@ def test_reset_endpoint(client):
     data = response.json()
     assert data["status"] == "success"
 
+
+def test_benchmark_endpoints(client):
+    # Test GET benchmark results
+    res_get = client.get("/api/benchmark/results?split=all")
+    assert res_get.status_code == 200
+    data_get = res_get.json()
+    assert data_get["status"] == "verified"
+    assert "exact_accuracy" in data_get
+    assert "macro_f1" in data_get
+    assert "confusion_matrix" in data_get
+    assert "category_metrics" in data_get
+    assert "mae" in data_get
+    assert "rmse" in data_get
+    assert data_get["total_flows"] == 6216
+
+    # Test POST benchmark run with held-out test split
+    res_run = client.post("/api/benchmark/run?split=test")
+    assert res_run.status_code == 200
+    data_run = res_run.json()
+    assert data_run["status"] == "verified"
+    assert data_run["total_flows"] == 933
+    assert data_run["exact_accuracy"] > 0.0
+    assert len(data_run["confusion_matrix"]["classes"]) > 0
+
+
